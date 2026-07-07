@@ -188,3 +188,23 @@ class TagMonitorUI(QObject):
         if name:
             self.remove_tag(name)
             self._tag_input.clear()
+
+    def setup_drop_handler(self, view: QWidget) -> None:
+        """Allow drag-and-drop from the tree to add monitored tags."""
+        def can_drop(mdata, action, row, column, parent):
+            return True
+
+        def handle_drop(mdata, action, row, column, parent):
+            if mdata is None:
+                return False
+            text = mdata.text()
+            if not text:
+                return False
+            for name in text.split("\n"):
+                name = name.strip()
+                if name:
+                    self.add_tag(name)
+            return True
+
+        self._model.canDropMimeData = can_drop  # type: ignore[method-assign]
+        self._model.dropMimeData = handle_drop  # type: ignore[method-assign]

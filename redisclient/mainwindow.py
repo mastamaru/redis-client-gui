@@ -174,10 +174,13 @@ class Window(QMainWindow):
         layout.addWidget(self.tag_monitor.build_controls())
 
         self.sub_view = QTableView()
+        self.sub_view.setAcceptDrops(True)
+        self.sub_view.setDragDropMode(QTableView.DragDropMode.DropOnly)
         self.sub_view.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
         self.sub_view.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.sub_view)
         self.sub_view.setModel(self.tag_monitor.model)
+        self.tag_monitor.setup_drop_handler(self.sub_view)
 
         dock.setWidget(container)
         self.sub_dock = dock
@@ -366,6 +369,13 @@ class Window(QMainWindow):
     # ──────────────────────────────────────────────────────────
 
     def _copy_key(self) -> None:
+        hash_field = self.tree_ui.get_current_hash_field()
+        if hash_field:
+            _, field_name = hash_field
+            clipboard = QApplication.clipboard()
+            if clipboard is not None:
+                clipboard.setText(field_name)
+            return
         key = self.tree_ui.get_current_key()
         if key:
             clipboard = QApplication.clipboard()

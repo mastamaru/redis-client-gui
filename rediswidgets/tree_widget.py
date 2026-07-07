@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 
-from PyQt6.QtCore import QModelIndex, QObject, Qt, pyqtSignal
+from PyQt6.QtCore import QMimeData, QModelIndex, QObject, Qt, pyqtSignal
 from PyQt6.QtGui import QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import QTreeView
 
@@ -242,6 +242,26 @@ class RedisTreeModel(QStandardItemModel):
 
     def clear_headers(self) -> None:
         self.setHorizontalHeaderLabels(self.HEADERS)
+
+    def mimeData(self, idxs: Any) -> QMimeData:  # noqa: N802
+        """Return mime data with field/key names for drag operations."""
+        mdata = QMimeData()
+        names: list[str] = []
+        for idx in idxs:
+            if idx.column() != 0:
+                continue
+            item = self.itemFromIndex(idx)
+            if item is None:
+                continue
+            field_name = item.data(self.ROLE_FIELD_NAME)
+            if field_name:
+                names.append(field_name)
+            else:
+                key_name = item.data(self.ROLE_KEY_NAME)
+                if key_name:
+                    names.append(key_name)
+        mdata.setText("\n".join(names))
+        return mdata
 
 
 class TreeWidget(QObject):
