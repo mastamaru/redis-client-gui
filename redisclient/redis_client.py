@@ -131,6 +131,11 @@ class RedisClient(QObject):
         r = self._require_redis()
         return r.hgetall(hash_key)
 
+    def hkeys(self, hash_key: str) -> list[str]:
+        """Return all field names in a hash (without values)."""
+        r = self._require_redis()
+        return r.hkeys(hash_key)
+
     def scan_keys(self, pattern: str = "*") -> list[str]:
         """Scan keyspace using SCAN. Returns list of key names matching pattern."""
         r = self._require_redis()

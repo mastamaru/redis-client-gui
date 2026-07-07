@@ -330,6 +330,12 @@ class Window(QMainWindow):
 
     @trycatchslot
     def _on_tree_selection_changed(self, current: Any, previous: Any) -> None:
+        hash_field = self.tree_ui.get_current_hash_field()
+        if hash_field:
+            hash_key, field_name = hash_field
+            field_type = self.tree_ui.get_current_field_type()
+            self.attrs_ui.show_hash_field(self.uaclient, hash_key, field_name, field_type)
+            return
         key = self.tree_ui.get_current_key()
         if key:
             self.attrs_ui.show_key(self.uaclient, key)
@@ -367,9 +373,15 @@ class Window(QMainWindow):
 
     @trycatchslot
     def _subscribe_current(self) -> None:
+        hash_field = self.tree_ui.get_current_hash_field()
+        if hash_field:
+            _, field_name = hash_field
+            self.tag_monitor.add_tag(field_name)
+            self.sub_dock.raise_()
+            return
         key = self.tree_ui.get_current_key()
         if not key:
-            QMessageBox.information(self, "Monitor Tag", "Select a key first.")
+            QMessageBox.information(self, "Monitor Tag", "Select a tag first.")
             return
         self.tag_monitor.add_tag(key)
         self.sub_dock.raise_()

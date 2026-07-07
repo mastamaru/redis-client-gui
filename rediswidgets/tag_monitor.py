@@ -142,7 +142,7 @@ class TagMonitorUI(QObject):
         tag_type = self._tagtypes.get(tag_name, "float")
         if tag_type == "bool":
             try:
-                return "ON" if float(raw) != 0 else "OFF"
+                return str(int(float(raw)))
             except (ValueError, TypeError):
                 return str(raw)
         if tag_type == "float":

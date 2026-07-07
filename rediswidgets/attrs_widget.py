@@ -69,6 +69,51 @@ class AttrsWidget(QObject):
         self._key_name = key_name
         self._load()
 
+    def show_hash_field(
+        self,
+        client: RedisClient,
+        hash_key: str,
+        field_name: str,
+        tag_type: str | None = None,
+    ) -> None:
+        """Show attributes for a hash field: Field, Data Type, Value."""
+        self._client = client
+        self._key_name = field_name
+        self.clear()
+
+        if tag_type is None:
+            tag_type = "float"
+
+        try:
+            values = client.hmget_fields(hash_key, [field_name])
+            raw_value = values.get(field_name)
+        except Exception as ex:
+            logger.exception("Failed to read hash field %s:%s", hash_key, field_name)
+            self.error.emit(ex)
+            return
+
+        display_value = self._format_field_value(raw_value, tag_type)
+
+        self._add_row("Field", field_name)
+        self._add_row("Data Type", tag_type)
+        self._add_row("Value", display_value)
+
+    @staticmethod
+    def _format_field_value(raw: str | None, tag_type: str) -> str:
+        if raw is None:
+            return "—"
+        if tag_type == "bool":
+            try:
+                return str(int(float(raw)))
+            except (ValueError, TypeError):
+                return str(raw)
+        if tag_type == "float":
+            try:
+                return f"{float(raw):.3f}"
+            except (ValueError, TypeError):
+                return str(raw)
+        return str(raw)
+
     def reload(self) -> None:
         """Reload the current key's data."""
         if self._client is None or self._key_name is None:

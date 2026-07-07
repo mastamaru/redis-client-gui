@@ -72,14 +72,14 @@ class TestTagMonitorPolling:
         ui.set_client(client_with_tags)
         ui.add_tag("A107JA_RUN")
         ui._poll()
-        assert ui.model.item(0, 1).text() == "ON"
+        assert ui.model.item(0, 1).text() == "1"
 
     def test_poll_updates_bool_off(self, qapp, client_with_tags):
         ui = TagMonitorUI()
         ui.set_client(client_with_tags)
         ui.add_tag("XV1220A")
         ui._poll()
-        assert ui.model.item(0, 1).text() == "OFF"
+        assert ui.model.item(0, 1).text() == "0"
 
     def test_poll_updates_string_display(self, qapp, client_with_tags):
         ui = TagMonitorUI()
