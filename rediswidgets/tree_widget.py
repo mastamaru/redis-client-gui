@@ -59,6 +59,16 @@ class RedisTreeModel(QStandardItemModel):
                 row = self._make_leaf_row(name, matching_keys[0])
             self.appendRow(row)
 
+    def hasChildren(self, parent: QModelIndex = QModelIndex()) -> bool:  # noqa: N802
+        """Return True for folder nodes so Qt shows the expand arrow."""
+        if not parent.isValid():
+            return True
+        item = self.itemFromIndex(parent)
+        if item is None:
+            return False
+        is_folder = item.data(self.ROLE_IS_FOLDER)
+        return bool(is_folder)
+
     def canFetchMore(self, parent: QModelIndex = QModelIndex()) -> bool:  # noqa: N802
         """Return True if the parent index is an unfetched folder."""
         if not parent.isValid():

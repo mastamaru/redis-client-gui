@@ -118,6 +118,19 @@ class RedisClient(QObject):
             raise ConnectionError("Not connected to Redis")
         return self._redis
 
+    def hmget_fields(self, hash_key: str, fields: list[str]) -> dict[str, str | None]:
+        """HMGET specific fields from a hash. Returns {field: value_or_None}."""
+        r = self._require_redis()
+        if not fields:
+            return {}
+        values = r.hmget(hash_key, fields)
+        return {f: v for f, v in zip(fields, values)}
+
+    def hgetall_hash(self, hash_key: str) -> dict[str, str]:
+        """HGETALL — return all field-value pairs of a hash."""
+        r = self._require_redis()
+        return r.hgetall(hash_key)
+
     def scan_keys(self, pattern: str = "*") -> list[str]:
         """Scan keyspace using SCAN. Returns list of key names matching pattern."""
         r = self._require_redis()

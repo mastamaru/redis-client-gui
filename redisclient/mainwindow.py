@@ -49,7 +49,7 @@ from redisclient.graphwidget import GraphUI
 from redisclient.redis_client import RedisClient
 from rediswidgets.attrs_widget import AttrsWidget
 from rediswidgets.logger import QtHandler
-from rediswidgets.pubsub_widget import PubSubUI
+from rediswidgets.tag_monitor import TagMonitorUI
 from rediswidgets.tree_widget import TreeWidget
 from rediswidgets.utils import trycatchslot
 
@@ -162,19 +162,24 @@ class Window(QMainWindow):
         self.attrs_ui.error.connect(self.show_error)
 
     def _build_sub_dock(self) -> None:
-        """Right-bottom dock: Pub/Sub subscriptions."""
-        dock = QDockWidget("&Pub/Sub", self)
+        """Right-bottom dock: Tag Monitor (polling-based)."""
+        dock = QDockWidget("&Tag Monitor", self)
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(2, 2, 2, 2)
+
+        self.tag_monitor = TagMonitorUI()
+        layout.addWidget(self.tag_monitor.build_controls())
+
         self.sub_view = QTableView()
-        self.sub_view.setAcceptDrops(True)
-        self.sub_view.setDragDropMode(QTableView.DragDropMode.DropOnly)
         self.sub_view.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
         self.sub_view.horizontalHeader().setStretchLastSection(True)
-        dock.setWidget(self.sub_view)
+        layout.addWidget(self.sub_view)
+        self.sub_view.setModel(self.tag_monitor.model)
+
+        dock.setWidget(container)
         self.sub_dock = dock
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
-
-        self.pubsub_ui = PubSubUI()
-        self.sub_view.setModel(self.pubsub_ui.model)
 
     def _build_graph_dock(self) -> None:
         """Right-bottom dock: live graph."""
@@ -211,8 +216,8 @@ class Window(QMainWindow):
         self.action_disconnect = QAction("&Disconnect", self)
         self.action_copy_key = QAction("Copy &Key", self)
         self.action_copy_prefix = QAction("Copy &Prefix", self)
-        self.action_subscribe = QAction("&Subscribe to Channel", self)
-        self.action_unsubscribe = QAction("&Unsubscribe from Channel", self)
+        self.action_subscribe = QAction("&Monitor Tag", self)
+        self.action_unsubscribe = QAction("&Unmonitor Tag", self)
         self.action_add_to_graph = QAction("Add to &Graph", self)
         self.action_add_to_graph.setShortcut("Ctrl+G")
         self.action_remove_from_graph = QAction("Remove from Graph", self)
@@ -294,13 +299,16 @@ class Window(QMainWindow):
             return
 
         self.tree_ui.set_root(self.uaclient)
+        self.tag_monitor.set_client(self.uaclient)
+        self.tag_monitor.start()
         self.tree_view.setFocus()
         self._apply_ui_state("connected")
 
     @trycatchslot
     def disconnect(self) -> None:
         try:
-            self.pubsub_ui.clear(self.uaclient)
+            self.tag_monitor.stop()
+            self.tag_monitor.clear()
         except Exception:
             pass
         try:
@@ -361,16 +369,16 @@ class Window(QMainWindow):
     def _subscribe_current(self) -> None:
         key = self.tree_ui.get_current_key()
         if not key:
-            QMessageBox.information(self, "Subscribe", "Select a key first.")
+            QMessageBox.information(self, "Monitor Tag", "Select a key first.")
             return
-        self.pubsub_ui.subscribe(self.uaclient, key)
+        self.tag_monitor.add_tag(key)
         self.sub_dock.raise_()
 
     @trycatchslot
     def _unsubscribe_current(self) -> None:
         key = self.tree_ui.get_current_key()
-        if key and key in self.pubsub_ui.get_subscribed_channels():
-            self.pubsub_ui.unsubscribe(self.uaclient, key)
+        if key and key in self.tag_monitor.get_monitored_tags():
+            self.tag_monitor.remove_tag(key)
 
     @trycatchslot
     def _add_to_graph(self) -> None:
