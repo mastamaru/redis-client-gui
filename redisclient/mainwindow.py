@@ -142,6 +142,7 @@ class Window(QMainWindow):
 
         dock.setWidget(container)
         self.addr_dock = dock
+        self.addr_dock.setObjectName("addrDock")
         self.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, dock)
 
     def _build_attr_dock(self) -> None:
@@ -156,6 +157,7 @@ class Window(QMainWindow):
             header.setStretchLastSection(True)
         dock.setWidget(self.attr_view)
         self.attr_dock = dock
+        self.attr_dock.setObjectName("attrDock")
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
         self.attrs_ui = AttrsWidget(self.attr_view)
@@ -179,6 +181,7 @@ class Window(QMainWindow):
 
         dock.setWidget(container)
         self.sub_dock = dock
+        self.sub_dock.setObjectName("subDock")
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
     def _build_graph_dock(self) -> None:
@@ -189,6 +192,7 @@ class Window(QMainWindow):
         layout.setContentsMargins(2, 2, 2, 2)
         dock.setWidget(container)
         self.graph_dock = dock
+        self.graph_dock.setObjectName("graphDock")
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
         self.graph_ui = GraphUI()
@@ -205,6 +209,7 @@ class Window(QMainWindow):
         self.log_text.setMaximumHeight(150)
         dock.setWidget(self.log_text)
         self.log_dock = dock
+        self.log_dock.setObjectName("logDock")
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
 
     def _build_menus(self) -> None:
@@ -299,6 +304,9 @@ class Window(QMainWindow):
             return
 
         self.tree_ui.set_root(self.uaclient)
+        sel_model = self.tree_view.selectionModel()
+        if sel_model is not None:
+            sel_model.currentChanged.connect(self._on_tree_selection_changed)
         self.tag_monitor.set_client(self.uaclient)
         self.tag_monitor.start()
         self.tree_view.setFocus()
