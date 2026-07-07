@@ -1,0 +1,46 @@
+[project]
+name = "redis-client-gui"
+version = "0.1.0"
+description = "Redis GUI Client — based on opcua-client-gui architecture"
+authors = [{ name = "OTS PIM" }]
+license = { text = "GNU General Public License v3.0" }
+requires-python = ">=3.12"
+dependencies = [
+    "PyQt6",
+    "redis>=5.0",
+    "numpy",
+    "pyqtgraph",
+]
+
+[project.urls]
+Repository = "https://github.com/FreeOpcUa/opcua-client-gui"
+
+[project.scripts]
+redis-client-gui = "redisclient.mainwindow:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-qt",
+    "fakeredis",
+    "mypy",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyqt6"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["redis.*", "pyqtgraph", "numpy", "fakeredis"]
+ignore_missing_imports = true
+
+[tool.setuptools]
+packages = ["redisclient", "redisclient.theme", "rediswidgets"]
