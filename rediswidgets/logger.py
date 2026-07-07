@@ -16,4 +16,4 @@ class QtHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         msg = self.format(record)
-        self.widget.append(msg)
+        self.widget.appendPlainText(msg)
