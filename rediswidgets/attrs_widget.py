@@ -15,9 +15,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from PyQt6.QtCore import QModelIndex, QObject, pyqtSignal
+from PyQt6.QtCore import QAbstractItemModel, QModelIndex, QObject, pyqtSignal
 from PyQt6.QtGui import QStandardItem, QStandardItemModel
-from PyQt6.QtWidgets import QTreeView
+from PyQt6.QtWidgets import QAbstractItemView, QTreeView
 
 from redisclient.redis_client import RedisClient
 from rediswidgets.value_editor_dialog import ValueEditorDialog
@@ -48,8 +48,14 @@ class AttrsWidget(QObject):
         self._client: RedisClient | None = None
         self._key_name: str | None = None
         self._value: Any = None
+        self._is_hash_field: bool = False
+        self._hash_key: str | None = None
+        self._field_name: str | None = None
+        self._tag_type: str = "float"
+        self._editing: bool = False
 
         self._view.doubleClicked.connect(self._on_double_click)
+        self._model.itemChanged.connect(self._on_item_changed)
 
     @property
     def model(self) -> QStandardItemModel:
@@ -65,6 +71,8 @@ class AttrsWidget(QObject):
 
     def show_key(self, client: RedisClient, key_name: str) -> None:
         """Load metadata + value for *key_name* and populate the display."""
+        self._is_hash_field = False
+        self._view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._client = client
         self._key_name = key_name
         self._load()
@@ -76,13 +84,18 @@ class AttrsWidget(QObject):
         field_name: str,
         tag_type: str | None = None,
     ) -> None:
-        """Show attributes for a hash field: Field, Data Type, Value."""
+        """Show attributes for a hash field: Field, Data Type, Value.
+
+        The Value cell is editable via double-click. Press Enter to write
+        the new value back to Redis.
+        """
         self._client = client
         self._key_name = field_name
+        self._is_hash_field = True
+        self._hash_key = hash_key
+        self._field_name = field_name
+        self._tag_type = tag_type or "float"
         self.clear()
-
-        if tag_type is None:
-            tag_type = "float"
 
         try:
             values = client.hmget_fields(hash_key, [field_name])
@@ -92,11 +105,16 @@ class AttrsWidget(QObject):
             self.error.emit(ex)
             return
 
-        display_value = self._format_field_value(raw_value, tag_type)
-
+        display_value = self._format_field_value(raw_value, self._tag_type)
+        self._editing = True
         self._add_row("Field", field_name)
-        self._add_row("Data Type", tag_type)
-        self._add_row("Value", display_value)
+        self._add_row("Data Type", self._tag_type)
+        val_item = QStandardItem(display_value)
+        val_item.setEditable(True)
+        self._model.appendRow([self._make_prop("Value"), val_item])
+        self._editing = False
+
+        self._view.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
 
     @staticmethod
     def _format_field_value(raw: str | None, tag_type: str) -> str:
@@ -170,8 +188,60 @@ class AttrsWidget(QObject):
         val_item.setEditable(False)
         self._model.appendRow([prop_item, val_item])
 
+    def _make_prop(self, name: str) -> QStandardItem:
+        item = QStandardItem(name)
+        item.setEditable(False)
+        return item
+
+    def _on_item_changed(self, item: QStandardItem) -> None:
+        """Handle inline value edits for hash fields."""
+        if self._editing or not self._is_hash_field:
+            return
+        if not self._field_name or not self._hash_key or self._client is None:
+            return
+
+        prop_item = self._model.item(item.row(), 0)
+        if prop_item is None or prop_item.text() != "Value":
+            return
+
+        new_text = item.text().strip()
+        if not new_text:
+            return
+
+        validated = self._validate_value(new_text, self._tag_type)
+        if validated is None:
+            self.error.emit(ValueError(f"Invalid {self._tag_type} value: {new_text}"))
+            self.show_hash_field(self._client, self._hash_key, self._field_name, self._tag_type)
+            return
+
+        try:
+            self._client.execute_command("HSET", self._hash_key, self._field_name, validated)
+            logger.info("HSET %s %s = %s", self._hash_key, self._field_name, validated)
+        except Exception as ex:
+            logger.exception("Failed to write hash field")
+            self.error.emit(ex)
+            self.show_hash_field(self._client, self._hash_key, self._field_name, self._tag_type)
+
+    @staticmethod
+    def _validate_value(text: str, tag_type: str) -> str | None:
+        """Validate user input based on tag type. Returns validated string or None."""
+        if tag_type == "bool":
+            try:
+                return str(int(float(text)))
+            except (ValueError, TypeError):
+                return None
+        if tag_type == "float":
+            try:
+                return f"{float(text):.3f}"
+            except (ValueError, TypeError):
+                return None
+        return text
+
     def _on_double_click(self, index: QModelIndex) -> None:
-        """Handle double-click on the Value row — open the editor dialog."""
+        """Handle double-click on Value row."""
+        if self._is_hash_field:
+            return  # Let inline editing work for hash fields
+
         if self._client is None or self._key_name is None:
             return
         if not index.isValid():

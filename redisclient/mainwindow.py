@@ -412,15 +412,26 @@ class Window(QMainWindow):
 
     @trycatchslot
     def _add_to_graph(self) -> None:
+        hash_field = self.tree_ui.get_current_hash_field()
+        if hash_field:
+            hash_key, field_name = hash_field
+            self.graph_ui.add_hash_field(self.uaclient, hash_key, field_name)
+            self.graph_dock.raise_()
+            return
         key = self.tree_ui.get_current_key()
         if not key:
-            QMessageBox.information(self, "Add to Graph", "Select a key first.")
+            QMessageBox.information(self, "Add to Graph", "Select a tag first.")
             return
         self.graph_ui.add_key(self.uaclient, key)
         self.graph_dock.raise_()
 
     @trycatchslot
     def _remove_from_graph(self) -> None:
+        hash_field = self.tree_ui.get_current_hash_field()
+        if hash_field:
+            _, field_name = hash_field
+            self.graph_ui.remove_key(field_name)
+            return
         key = self.tree_ui.get_current_key()
         if key:
             self.graph_ui.remove_key(key)

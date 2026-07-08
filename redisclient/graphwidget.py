@@ -67,14 +67,17 @@ class GraphUI(QObject):
     def __init__(self) -> None:
         QObject.__init__(self)
 
-        # Ordered list of plotted key names
+        # Ordered list of plotted names (key or field)
         self._keys: list[str] = []
 
-        # key_name → pyqtgraph PlotDataItem (curve)
+        # name → pyqtgraph PlotDataItem (curve)
         self._curves: dict[str, Any] = {}
 
-        # key_name → rolling numpy buffer of float values
+        # name → rolling numpy buffer of float values
         self._channels: dict[str, Any] = {}
+
+        # name → (hash_key, field_name) for hash field entries
+        self._hash_fields: dict[str, tuple[str, str]] = {}
 
         # Latest client used by add_key (timer reads through it)
         self._client: RedisClient | None = None
@@ -185,6 +188,41 @@ class GraphUI(QObject):
 
         logger.info("Added key %s to graph (color=%s)", key_name, color)
 
+    def add_hash_field(self, client: RedisClient, hash_key: str, field_name: str) -> None:
+        """Add a numeric hash field to the graph (polled via HMGET)."""
+        if not USE_GRAPH or self._plot_widget is None:
+            return
+
+        if field_name in self._keys:
+            return
+
+        try:
+            values = client.hmget_fields(hash_key, [field_name])
+            raw_value = values.get(field_name)
+            float(raw_value)
+        except (ValueError, TypeError) as ex:
+            self.error.emit(ValueError(f"Field '{field_name}' is not numeric"))
+            return
+        except Exception as ex:
+            self.error.emit(ex)
+            return
+
+        self._client = client
+        self._hash_fields[field_name] = (hash_key, field_name)
+
+        num_points = DEFAULT_NUM_POINTS
+        if self._num_points_spin is not None:
+            num_points = self._num_points_spin.value()
+        self._channels[field_name] = np.zeros(num_points, dtype=float)
+
+        color = COLOR_CYCLE[len(self._keys) % len(COLOR_CYCLE)]
+        plot_item = self._plot_widget.getPlotItem()
+        curve = plot_item.plot(pen=color, name=field_name)
+        self._curves[field_name] = curve
+        self._keys.append(field_name)
+
+        logger.info("Added hash field %s to graph (color=%s)", field_name, color)
+
     def remove_key(self, key_name: str) -> None:
         """Remove *key_name* and its curve from the graph."""
         if key_name not in self._keys:
@@ -200,6 +238,7 @@ class GraphUI(QObject):
                 logger.exception("Failed to remove curve for %s", key_name)
 
         self._channels.pop(key_name, None)
+        self._hash_fields.pop(key_name, None)
         logger.info("Removed key %s from graph", key_name)
 
     def get_keys(self) -> list[str]:
@@ -229,6 +268,7 @@ class GraphUI(QObject):
         self._keys.clear()
         self._curves.clear()
         self._channels.clear()
+        self._hash_fields.clear()
         logger.info("Graph cleared")
 
     # ──────────────────────────────────────────────
@@ -236,35 +276,39 @@ class GraphUI(QObject):
     # ──────────────────────────────────────────────
 
     def _on_timeout(self) -> None:
-        """Called on each timer tick; reads each key and updates its curve."""
+        """Called on each timer tick; reads each key/field and updates its curve."""
         if self._client is None:
             return
 
-        for key_name in list(self._keys):
+        for name in list(self._keys):
+            hash_entry = self._hash_fields.get(name)
             try:
-                raw_value = self._client.get_value(key_name)
+                if hash_entry is not None:
+                    hk, fn = hash_entry
+                    vals = self._client.hmget_fields(hk, [fn])
+                    raw_value = vals.get(fn)
+                else:
+                    raw_value = self._client.get_value(name)
                 value = float(raw_value)
             except (ValueError, TypeError):
                 logger.warning(
-                    "Could not convert key %s value %r to float; skipping",
-                    key_name,
-                    raw_value,
+                    "Could not convert %s value %r to float; skipping",
+                    name, raw_value,
                 )
                 continue
             except Exception as ex:
-                logger.warning("Error reading key %s: %s", key_name, ex)
+                logger.warning("Error reading %s: %s", name, ex)
                 self.error.emit(ex)
                 continue
 
-            channel = self._channels.get(key_name)
+            channel = self._channels.get(name)
             if channel is None:
                 continue
 
-            # Roll left and append the new value at the end
             channel = np.roll(channel, -1)
             channel[-1] = value
-            self._channels[key_name] = channel
+            self._channels[name] = channel
 
-            curve = self._curves.get(key_name)
+            curve = self._curves.get(name)
             if curve is not None:
                 curve.setData(channel)
