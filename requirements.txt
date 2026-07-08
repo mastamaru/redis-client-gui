@@ -1,0 +1,4 @@
+PyQt6>=6.7
+redis>=5.0
+numpy>=1.26
+pyqtgraph>=0.13
