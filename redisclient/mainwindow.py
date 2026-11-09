@@ -49,6 +49,7 @@ from redisclient.graphwidget import GraphUI
 from redisclient.redis_client import RedisClient
 from rediswidgets.attrs_widget import AttrsWidget
 from rediswidgets.logger import QtHandler
+from rediswidgets.tag_search import TagSearchResults, matching_tags
 from rediswidgets.tag_monitor import TagMonitorUI
 from rediswidgets.tree_widget import TreeWidget
 from rediswidgets.utils import trycatchslot
@@ -63,6 +64,9 @@ class Window(QMainWindow):
         QMainWindow.__init__(self)
         self.setWindowTitle("Redis Client GUI")
         self.resize(1000, 700)
+        self._tag_cache: list[str] | None = None
+        self._attributes_source: str | None = None
+        self._search_active = False
 
         QCoreApplication.setOrganizationName("RedisClientGUI")
         QCoreApplication.setApplicationName("redis-client-gui")
@@ -94,13 +98,29 @@ class Window(QMainWindow):
         self.tree_view.setSelectionBehavior(QTreeView.SelectionBehavior.SelectRows)
         self.tree_view.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
 
+        browser = QWidget()
+        layout = QVBoxLayout(browser)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Search tags")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_results = TagSearchResults()
+        self.search_empty_label = QLabel("No matching tags")
+        layout.addWidget(self.search_edit)
+        layout.addWidget(self.tree_view)
+        layout.addWidget(self.search_results)
+        layout.addWidget(self.search_empty_label)
+        self.search_results.hide()
+        self.search_empty_label.hide()
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.tree_view)
+        splitter.addWidget(browser)
         splitter.setStretchFactor(0, 1)
         self.setCentralWidget(splitter)
 
         self.tree_ui = TreeWidget(self.tree_view)
         self.tree_ui.error.connect(self.show_error)
+        self.search_edit.textChanged.connect(self._refresh_search)
+        self.search_results.currentItemChanged.connect(self._on_search_selection_changed)
 
     def _build_addr_dock(self) -> None:
         """Top dock: connection bar with host/port/db/tls + buttons."""
@@ -276,6 +296,11 @@ class Window(QMainWindow):
             sel_model.currentChanged.connect(self._on_tree_selection_changed)
 
         self.tree_view.customContextMenuRequested.connect(self._show_tree_context_menu)
+        self.sub_view.clicked.connect(self.tag_monitor.select_tag)
+        self.sub_view.selectionModel().currentChanged.connect(
+            lambda current, previous: self.tag_monitor.select_tag(current)
+        )
+        self.tag_monitor.tag_selected.connect(self._show_selected_tag)
 
         self.uaclient.connection_state_changed.connect(
             self._on_connection_state_changed,
@@ -331,8 +356,11 @@ class Window(QMainWindow):
         except Exception as ex:
             self.show_error(ex)
         finally:
+            self._invalidate_tag_cache()
             self.tree_ui.clear()
             self.attrs_ui.clear()
+            self.search_results.clear()
+            self.search_empty_label.hide()
             self._apply_ui_state("idle")
 
     # ──────────────────────────────────────────────────────────
@@ -341,17 +369,82 @@ class Window(QMainWindow):
 
     @trycatchslot
     def _on_tree_selection_changed(self, current: Any, previous: Any) -> None:
+        if self.search_edit.text().strip():
+            return
         hash_field = self.tree_ui.get_current_hash_field()
         if hash_field:
+            self._attributes_source = "tree"
             hash_key, field_name = hash_field
             field_type = self.tree_ui.get_current_field_type()
             self.attrs_ui.show_hash_field(self.uaclient, hash_key, field_name, field_type)
             return
         key = self.tree_ui.get_current_key()
         if key:
+            self._attributes_source = "tree"
             self.attrs_ui.show_key(self.uaclient, key)
 
+    def _invalidate_tag_cache(self) -> None:
+        self._tag_cache = None
+
+    def _show_selected_tag(self, field_name: str, tag_type: str) -> None:
+        if self.uaclient.is_connected:
+            self._attributes_source = "monitor"
+            self.attrs_ui.show_hash_field(self.uaclient, "ots-pim:tags", field_name, tag_type or "float")
+
+    def _refresh_search(self, *_args: Any) -> None:
+        query = self.search_edit.text().strip()
+        active = bool(query)
+        was_active = self._search_active
+        self._search_active = active
+        if active and not was_active and self._attributes_source == "tree":
+            self.attrs_ui.clear()
+            self._attributes_source = None
+        if hasattr(self, "action_copy_key"):
+            self._set_tree_actions_enabled(self.uaclient.is_connected and not active)
+        self.tree_view.setVisible(not active)
+        self.search_results.setVisible(active)
+        self.search_results.clear()
+        self.search_empty_label.hide()
+        if not active:
+            if was_active:
+                self._invalidate_tag_cache()
+                if self._attributes_source != "monitor":
+                    self._on_tree_selection_changed(None, None)
+            return
+        if self._attributes_source == "search":
+            self.attrs_ui.clear()
+            self._attributes_source = None
+        if not self.uaclient.is_connected:
+            return
+        try:
+            if self._tag_cache is None:
+                self._tag_cache = self.uaclient.hkeys("ots-pim:tags")
+            tags = matching_tags(self._tag_cache, query)
+        except Exception as ex:
+            self.show_error(ex)
+            return
+        self.search_results.addItems(tags)
+        self.search_empty_label.setVisible(not tags)
+
+    def _on_search_selection_changed(self, current: Any, previous: Any) -> None:
+        if current is None:
+            if self._attributes_source == "search":
+                self.attrs_ui.clear()
+                self._attributes_source = None
+            return
+        if not self.search_edit.text().strip() or not self.uaclient.is_connected:
+            return
+        try:
+            tag_type = self.uaclient.hgetall_hash("ots-pim:tagtypes").get(current.text()) or "float"
+            self._attributes_source = "search"
+            self.attrs_ui.show_hash_field(self.uaclient, "ots-pim:tags", current.text(), tag_type)
+        except Exception as ex:
+            self.attrs_ui.clear()
+            self.show_error(ex)
+
     def _show_tree_context_menu(self, pos: QPoint) -> None:
+        if self.search_edit.text().strip():
+            return
         menu = QMenu(self)
         menu.addAction(self.action_copy_key)
         menu.addAction(self.action_copy_prefix)
@@ -369,6 +462,8 @@ class Window(QMainWindow):
     # ──────────────────────────────────────────────────────────
 
     def _copy_key(self) -> None:
+        if self.search_edit.text().strip():
+            return
         hash_field = self.tree_ui.get_current_hash_field()
         if hash_field:
             _, field_name = hash_field
@@ -383,6 +478,8 @@ class Window(QMainWindow):
                 clipboard.setText(key)
 
     def _copy_prefix(self) -> None:
+        if self.search_edit.text().strip():
+            return
         prefix = self.tree_ui.get_current_prefix()
         if prefix:
             clipboard = QApplication.clipboard()
@@ -391,6 +488,8 @@ class Window(QMainWindow):
 
     @trycatchslot
     def _subscribe_current(self) -> None:
+        if self.search_edit.text().strip():
+            return
         hash_field = self.tree_ui.get_current_hash_field()
         if hash_field:
             _, field_name = hash_field
@@ -406,12 +505,16 @@ class Window(QMainWindow):
 
     @trycatchslot
     def _unsubscribe_current(self) -> None:
+        if self.search_edit.text().strip():
+            return
         key = self.tree_ui.get_current_key()
         if key and key in self.tag_monitor.get_monitored_tags():
             self.tag_monitor.remove_tag(key)
 
     @trycatchslot
     def _add_to_graph(self) -> None:
+        if self.search_edit.text().strip():
+            return
         hash_field = self.tree_ui.get_current_hash_field()
         if hash_field:
             hash_key, field_name = hash_field
@@ -427,6 +530,8 @@ class Window(QMainWindow):
 
     @trycatchslot
     def _remove_from_graph(self) -> None:
+        if self.search_edit.text().strip():
+            return
         hash_field = self.tree_ui.get_current_hash_field()
         if hash_field:
             _, field_name = hash_field
@@ -446,9 +551,14 @@ class Window(QMainWindow):
     # ──────────────────────────────────────────────────────────
 
     def _on_connection_state_changed(self, state: str) -> None:
+        self._invalidate_tag_cache()
         if state == "connected":
             self._apply_ui_state("connected")
+            self._refresh_search()
         else:
+            self.search_results.clear()
+            self.search_empty_label.hide()
+            self.attrs_ui.clear()
             self._apply_ui_state("reconnecting")
 
     def _apply_ui_state(self, state: str) -> None:
@@ -463,12 +573,22 @@ class Window(QMainWindow):
 
         for view in (
             self.tree_view,
+            self.search_edit,
+            self.search_results,
             self.attr_view,
             self.sub_view,
             self.graph_dock,
         ):
             view.setEnabled(connected)
 
+        self._set_tree_actions_enabled(connected and not self.search_edit.text().strip())
+        self.action_execute_command.setEnabled(connected)
+
+        self.statusBar().showMessage(
+            "Connected" if connected else ("Reconnecting…" if state == "reconnecting" else "Disconnected")
+        )
+
+    def _set_tree_actions_enabled(self, enabled: bool) -> None:
         for action in (
             self.action_copy_key,
             self.action_copy_prefix,
@@ -476,13 +596,8 @@ class Window(QMainWindow):
             self.action_unsubscribe,
             self.action_add_to_graph,
             self.action_remove_from_graph,
-            self.action_execute_command,
         ):
-            action.setEnabled(connected)
-
-        self.statusBar().showMessage(
-            "Connected" if connected else ("Reconnecting…" if state == "reconnecting" else "Disconnected")
-        )
+            action.setEnabled(enabled)
 
     # ──────────────────────────────────────────────────────────
     # Dark mode

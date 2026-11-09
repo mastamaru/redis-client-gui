@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import fakeredis
 import pytest
-from PyQt6.QtCore import QCoreApplication, QSettings
+from unittest.mock import patch
+from PyQt6.QtCore import QCoreApplication, QSettings, Qt, QModelIndex
 from PyQt6.QtWidgets import QDockWidget, QTreeView, QTableView, QPlainTextEdit
 
 from redisclient.mainwindow import Window
@@ -44,6 +45,194 @@ def connected_window(window):
     from PyQt6.QtWidgets import QApplication
     QApplication.processEvents()
     yield window
+
+
+def test_search_finds_unloaded_tags_and_restores_tree(connected_window, qapp):
+    w = connected_window
+    w.uaclient._redis.hset('ots-pim:tags', mapping={'Alpha': '1', 'deep.Tag': '2'})
+    w.uaclient._redis.hset('ots-pim:tagtypes', mapping={'deep.Tag': 'bool'})
+    model = w.tree_view.model()
+    w.search_edit.setText('DEEP.')
+    qapp.processEvents()
+    assert w.search_results.count() == 1
+    with patch.object(w.attrs_ui, 'show_hash_field') as show:
+        w.search_results.setCurrentRow(0)
+        show.assert_called_with(w.uaclient, 'ots-pim:tags', 'deep.Tag', 'bool')
+    w.search_edit.clear()
+    assert w.tree_view.model() is model
+    assert not w.tree_view.isHidden()
+
+
+def test_search_empty_and_refresh(connected_window, qapp):
+    w = connected_window
+    w.search_edit.setText('missing')
+    assert w.search_empty_label.text() == 'No matching tags'
+    w.uaclient._redis.hset('ots-pim:tags', 'missing', '1')
+    w._invalidate_tag_cache()
+    w._refresh_search()
+    assert w.search_results.count() == 1
+    w.disconnect()
+    assert w.search_results.count() == 0
+
+
+def test_search_keyboard_selection_and_default_type(connected_window, qtbot):
+    from PyQt6.QtCore import Qt
+    w = connected_window
+    w.uaclient._redis.hset('ots-pim:tags', mapping={'first': '1', 'second': '2'})
+    w.search_edit.setText('s')
+    with patch.object(w.attrs_ui, 'show_hash_field') as show:
+        w.search_results.setFocus()
+        qtbot.keyClick(w.search_results, Qt.Key.Key_Down)
+        show.assert_called_with(w.uaclient, 'ots-pim:tags', 'second', 'float')
+
+
+def test_search_failure_clears_old_results_and_actions(connected_window):
+    w = connected_window
+    w.uaclient._redis.hset('ots-pim:tags', 'tag', '1')
+    w.search_edit.setText('tag')
+    w._invalidate_tag_cache()
+    with patch.object(w.uaclient, 'hkeys', side_effect=RuntimeError('failed')), \
+         patch.object(w, 'show_error') as error, \
+         patch.object(w.tree_ui, 'get_current_key') as current:
+        w._refresh_search()
+        w._copy_key()
+        assert w.search_results.count() == 0
+        error.assert_called_once()
+        current.assert_not_called()
+
+
+def test_search_cache_and_reconnect(connected_window, qapp):
+    w = connected_window
+    w.uaclient._redis.hset('ots-pim:tags', 'alpha', '1')
+    with patch.object(w.uaclient, 'hkeys', wraps=w.uaclient.hkeys) as hkeys:
+        w.search_edit.setText('a')
+        w.search_edit.setText('al')
+        w.search_edit.clear()
+        w.search_edit.setText('alpha')
+        assert hkeys.call_count == 2
+        w.disconnect()
+        replacement = fakeredis.FakeRedis(decode_responses=True)
+        replacement.hset('ots-pim:tags', 'alphabet', '2')
+        w.uaclient.attach(replacement)
+        qapp.processEvents()
+        assert hkeys.call_count == 3
+        assert w.search_results.item(0).text() == 'alphabet'
+
+
+def test_search_whitespace_and_action_state(connected_window):
+    w = connected_window
+    actions = [w.action_copy_key, w.action_copy_prefix, w.action_subscribe,
+               w.action_unsubscribe, w.action_add_to_graph, w.action_remove_from_graph]
+    w.search_edit.setText('abc')
+    assert all(not action.isEnabled() for action in actions)
+    assert w.action_execute_command.isEnabled()
+    w.search_edit.setText('   ')
+    assert not w.tree_view.isHidden()
+    assert all(action.isEnabled() for action in actions)
+
+
+def test_monitor_click_keyboard_cross_selection_and_edit(connected_window, qtbot):
+    w = connected_window
+    redis = w.uaclient._redis
+    redis.hset('ots-pim:tags', mapping={'alpha': '1', 'beta': '2'})
+    redis.hset('ots-pim:tagtypes', 'beta', 'bool')
+    w.tag_monitor.set_client(w.uaclient)
+    w.tag_monitor.add_tag('alpha')
+    w.tag_monitor.add_tag('beta')
+    w.sub_dock.raise_()
+    qtbot.waitExposed(w)
+    index = w.tag_monitor.model.index(0, 1)
+    qtbot.mouseClick(w.sub_view.viewport(), Qt.MouseButton.LeftButton,
+                     pos=w.sub_view.visualRect(index).center())
+    assert w.attrs_ui.get_property('Field') == 'alpha'
+    redis.hset('ots-pim:tags', 'alpha', '3')
+    qtbot.mouseClick(w.sub_view.viewport(), Qt.MouseButton.LeftButton,
+                     pos=w.sub_view.visualRect(index).center())
+    assert w.attrs_ui.get_property('Value') == '3.000'
+    w.sub_view.setFocus()
+    qtbot.keyClick(w.sub_view, Qt.Key.Key_Down)
+    assert w.attrs_ui.get_property('Field') == 'beta'
+    assert w.attrs_ui.get_property('Data Type') == 'bool'
+    w.search_edit.setText('alpha')
+    w.search_results.setCurrentRow(0)
+    assert w.attrs_ui.get_property('Field') == 'alpha'
+    qtbot.mouseClick(w.sub_view.viewport(), Qt.MouseButton.LeftButton,
+                     pos=w.sub_view.visualRect(w.tag_monitor.model.index(1, 2)).center())
+    assert w.attrs_ui.get_property('Field') == 'beta'
+    w.search_results.setCurrentRow(-1)
+    assert w.attrs_ui.get_property('Field') == 'beta'
+    w.attrs_ui.model.item(2, 1).setText('0')
+    assert redis.hget('ots-pim:tags', 'beta') == '0'
+
+
+def test_search_deselection_clears_its_attributes(connected_window):
+    w = connected_window
+    w.uaclient._redis.hset('ots-pim:tags', 'alpha', '1')
+    w.search_edit.setText('alpha')
+    w.search_results.setCurrentRow(0)
+    assert w.attrs_ui.get_property('Field') == 'alpha'
+    w.search_results.setCurrentRow(-1)
+    assert w.attrs_ui.get_property('Field') is None
+
+
+def test_entering_search_clears_tree_attributes(connected_window):
+    w = connected_window
+    w.uaclient._redis.hset('ots-pim:tags', 'alpha', '1')
+    with patch.object(w.tree_ui, 'get_current_hash_field', return_value=('ots-pim:tags', 'alpha')):
+        w._on_tree_selection_changed(None, None)
+        assert w.attrs_ui.get_property('Field') == 'alpha'
+        w.search_edit.setText('alpha')
+        assert w.attrs_ui.get_property('Field') is None
+        assert w.attrs_ui.model.rowCount() == 0
+
+
+def test_clearing_search_preserves_monitor_selection(connected_window):
+    w = connected_window
+    w.uaclient._redis.hset('ots-pim:tags', mapping={'alpha': '1', 'beta': '2'})
+    with patch.object(w.tree_ui, 'get_current_hash_field', return_value=('ots-pim:tags', 'alpha')):
+        w._on_tree_selection_changed(None, None)
+        w.search_edit.setText('alpha')
+        w._show_selected_tag('beta', 'float')
+        w.search_edit.clear()
+        assert w.attrs_ui.get_property('Field') == 'beta'
+
+
+def test_reentering_search_refreshes_new_tags_once(connected_window):
+    w = connected_window
+    redis = w.uaclient._redis
+    redis.hset('ots-pim:tags', 'alpha', '1')
+    with patch.object(w.uaclient, 'hkeys', wraps=w.uaclient.hkeys) as hkeys:
+        w.search_edit.setText('a')
+        w.search_edit.setText('al')
+        assert hkeys.call_count == 1
+        redis.hset('ots-pim:tags', 'alpine', '2')
+        w.search_edit.clear()
+        w.search_edit.setText('al')
+        w.search_edit.setText('alp')
+        assert hkeys.call_count == 2
+        assert [w.search_results.item(i).text() for i in range(w.search_results.count())] == ['alpha', 'alpine']
+
+
+def test_search_results_drag_to_monitor(connected_window):
+    from PyQt6.QtCore import QModelIndex, Qt
+    from PyQt6.QtWidgets import QAbstractItemView
+
+    w = connected_window
+    w.uaclient._redis.hset('ots-pim:tags', 'pump:speed', '1450')
+    w.search_edit.setText('pump')
+    view = w.search_results
+    assert view.dragEnabled()
+    assert view.dragDropMode() == QAbstractItemView.DragDropMode.DragOnly
+    view.setCurrentRow(0)
+    payload = view.model().mimeData(view.selectedIndexes())
+    assert payload.hasText()
+    assert payload.text() == 'pump:speed'
+    model = w.tag_monitor.model
+    for _ in range(2):
+        assert model.dropMimeData(payload, Qt.DropAction.CopyAction, -1, -1, QModelIndex())
+    assert model.rowCount() == 1
+    assert model.item(0, 0).text() == 'pump:speed'
+    assert view.count() == 1
 
 
 class TestWindowConstruction:
