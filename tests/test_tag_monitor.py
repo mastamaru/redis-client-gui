@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import pytest
 import fakeredis
+from PyQt6.QtCore import QModelIndex
+from PyQt6.QtGui import QStandardItemModel
 
 from redisclient.redis_client import RedisClient
 from rediswidgets.tag_monitor import TagMonitorUI
@@ -57,6 +59,73 @@ class TestTagMonitorSetup:
         ui.add_tag("LIC1003A_PV")
         ui.add_tag("LIC1003A_PV")
         assert ui.model.rowCount() == 1
+
+
+class TestTagMonitorSelection:
+    @pytest.mark.parametrize("column", range(4))
+    def test_selects_tag_from_each_column_without_mutation(self, qapp, client_with_tags, column):
+        ui = TagMonitorUI()
+        ui.set_client(client_with_tags)
+        ui.add_tag("A107JA_RUN")
+        selected = []
+        ui.tag_selected.connect(lambda name, tag_type: selected.append((name, tag_type)))
+        before = client_with_tags._redis.hgetall("ots-pim:tags")
+
+        ui.select_tag(ui.model.index(0, column))
+
+        assert selected == [("A107JA_RUN", "bool")]
+        assert ui.get_monitored_tags() == ["A107JA_RUN"]
+        assert client_with_tags._redis.hgetall("ots-pim:tags") == before
+
+    def test_missing_type_defaults_to_float(self, qapp, client_with_tags):
+        ui = TagMonitorUI()
+        ui.set_client(client_with_tags)
+        ui.add_tag("unknown")
+        selected = []
+        ui.tag_selected.connect(lambda name, tag_type: selected.append((name, tag_type)))
+
+        ui.select_tag(ui.model.index(0, 2))
+
+        assert selected == [("unknown", "float")]
+
+    def test_invalid_foreign_and_removed_indexes_do_not_emit(self, qapp, client_with_tags):
+        ui = TagMonitorUI()
+        ui.set_client(client_with_tags)
+        ui.add_tag("A107JA_RUN")
+        removed = ui.model.index(0, 0)
+        foreign_model = QStandardItemModel(1, 1)
+        selected = []
+        ui.tag_selected.connect(lambda name, tag_type: selected.append((name, tag_type)))
+        ui.remove_tag("A107JA_RUN")
+
+        for index in (QModelIndex(), foreign_model.index(0, 0), removed):
+            ui.select_tag(index)
+
+        assert selected == []
+
+    def test_selection_after_removing_another_row(self, qapp, client_with_tags):
+        ui = TagMonitorUI()
+        ui.set_client(client_with_tags)
+        ui.add_tag("LIC1003A_PV")
+        ui.add_tag("SimStatus")
+        ui.remove_tag("LIC1003A_PV")
+        selected = []
+        ui.tag_selected.connect(lambda name, tag_type: selected.append((name, tag_type)))
+
+        ui.select_tag(ui.model.index(0, 3))
+
+        assert selected == [("SimStatus", "string")]
+        assert ui.get_monitored_tags() == ["SimStatus"]
+
+    def test_no_client_does_not_emit(self, qapp):
+        ui = TagMonitorUI()
+        ui.add_tag("unknown")
+        selected = []
+        ui.tag_selected.connect(lambda name, tag_type: selected.append((name, tag_type)))
+
+        ui.select_tag(ui.model.index(0, 0))
+
+        assert selected == []
 
 
 class TestTagMonitorPolling:

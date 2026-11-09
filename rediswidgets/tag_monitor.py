@@ -12,7 +12,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from PyQt6.QtCore import QObject, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QModelIndex, QObject, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -36,6 +36,7 @@ class TagMonitorUI(QObject):
     """Polls Redis hash fields at a fixed interval and displays current values."""
 
     error = pyqtSignal(Exception)
+    tag_selected = pyqtSignal(str, str)
 
     HEADERS = ["Tag", "Value", "Type", "Last Updated"]
 
@@ -98,6 +99,18 @@ class TagMonitorUI(QObject):
 
     def get_monitored_tags(self) -> list[str]:
         return list(self._monitored.keys())
+
+    def select_tag(self, index: QModelIndex) -> None:
+        """Emit the monitored tag associated with a current model index."""
+        if self._client is None or not index.isValid() or index.model() is not self._model:
+            return
+        if index != self._model.index(index.row(), index.column()):
+            return
+        item = self._model.item(index.row(), 0)
+        if item is None or self._monitored.get(item.text()) != index.row():
+            return
+        name = item.text()
+        self.tag_selected.emit(name, self._tagtypes.get(name, "float"))
 
     def clear(self) -> None:
         """Remove all monitored tags."""
