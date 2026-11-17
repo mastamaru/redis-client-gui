@@ -105,6 +105,7 @@ class Window(QMainWindow):
         self.search_edit.setPlaceholderText("Search tags")
         self.search_edit.setClearButtonEnabled(True)
         self.search_results = TagSearchResults()
+        self.search_results.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.search_empty_label = QLabel("No matching tags")
         layout.addWidget(self.search_edit)
         layout.addWidget(self.tree_view)
@@ -296,6 +297,7 @@ class Window(QMainWindow):
             sel_model.currentChanged.connect(self._on_tree_selection_changed)
 
         self.tree_view.customContextMenuRequested.connect(self._show_tree_context_menu)
+        self.search_results.customContextMenuRequested.connect(self._show_search_context_menu)
         self.sub_view.clicked.connect(self.tag_monitor.select_tag)
         self.sub_view.selectionModel().currentChanged.connect(
             lambda current, previous: self.tag_monitor.select_tag(current)
@@ -457,6 +459,20 @@ class Window(QMainWindow):
         if viewport is not None:
             menu.exec(viewport.mapToGlobal(pos))
 
+    def _show_search_context_menu(self, pos: QPoint) -> None:
+        if not self.uaclient.is_connected:
+            return
+        item = self.search_results.itemAt(pos)
+        if item is None:
+            return
+        tag_name = item.text()
+        menu = QMenu(self)
+        menu.addAction("Monitor Tag").triggered.connect(lambda _checked: self._monitor_tag(tag_name))
+        menu.addAction("Add to Graph").triggered.connect(
+            lambda _checked: self._graph_tag(tag_name, ("ots-pim:tags", tag_name))
+        )
+        menu.exec(self.search_results.viewport().mapToGlobal(pos))
+
     # ──────────────────────────────────────────────────────────
     # Action handlers
     # ──────────────────────────────────────────────────────────
@@ -492,16 +508,19 @@ class Window(QMainWindow):
             return
         hash_field = self.tree_ui.get_current_hash_field()
         if hash_field:
-            _, field_name = hash_field
-            self.tag_monitor.add_tag(field_name)
-            self.sub_dock.raise_()
+            self._monitor_tag(hash_field[1])
             return
         key = self.tree_ui.get_current_key()
         if not key:
             QMessageBox.information(self, "Monitor Tag", "Select a tag first.")
             return
-        self.tag_monitor.add_tag(key)
-        self.sub_dock.raise_()
+        self._monitor_tag(key)
+
+    @trycatchslot
+    def _monitor_tag(self, tag_name: str) -> None:
+        if self.uaclient.is_connected:
+            self.tag_monitor.add_tag(tag_name)
+            self.sub_dock.raise_()
 
     @trycatchslot
     def _unsubscribe_current(self) -> None:
@@ -517,15 +536,22 @@ class Window(QMainWindow):
             return
         hash_field = self.tree_ui.get_current_hash_field()
         if hash_field:
-            hash_key, field_name = hash_field
-            self.graph_ui.add_hash_field(self.uaclient, hash_key, field_name)
-            self.graph_dock.raise_()
+            self._graph_tag(hash_field[1], hash_field)
             return
         key = self.tree_ui.get_current_key()
         if not key:
             QMessageBox.information(self, "Add to Graph", "Select a tag first.")
             return
-        self.graph_ui.add_key(self.uaclient, key)
+        self._graph_tag(key)
+
+    @trycatchslot
+    def _graph_tag(self, key_name: str, hash_field: tuple[str, str] | None = None) -> None:
+        if not self.uaclient.is_connected:
+            return
+        if hash_field:
+            self.graph_ui.add_hash_field(self.uaclient, *hash_field)
+        else:
+            self.graph_ui.add_key(self.uaclient, key_name)
         self.graph_dock.raise_()
 
     @trycatchslot

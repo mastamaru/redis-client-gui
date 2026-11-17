@@ -47,6 +47,123 @@ def connected_window(window):
     yield window
 
 
+@pytest.fixture
+def search_context_window(connected_window, qapp):
+    w = connected_window
+    w.uaclient._redis.hset('ots-pim:tags', mapping={'Alpha': '11', 'Beta': '22', 'Text': 'online'})
+    w.uaclient._redis.set('Beta', '999')
+    w.tag_monitor.set_client(w.uaclient)
+    w.tag_monitor.stop()
+    w.graph_ui._timer.stop()
+    w.search_edit.setText('a')
+    w.search_results.setCurrentRow(0)
+    qapp.processEvents()
+    return w
+
+
+@pytest.mark.parametrize('action', ['Monitor Tag', 'Add to Graph'])
+def test_search_context_targets_clicked_tag(search_context_window, qtbot, action):
+    from PyQt6.QtWidgets import QMenu
+
+    w = search_context_window
+    view = w.search_results
+    beta = next(view.item(i) for i in range(view.count()) if view.item(i).text() == 'Beta')
+    position = view.visualItemRect(beta).center()
+
+    def select_action(menu, _position):
+        assert [item.text() for item in menu.actions()] == ['Monitor Tag', 'Add to Graph']
+        next(item for item in menu.actions() if item.text() == action).trigger()
+
+    with patch.object(QMenu, 'exec', new=select_action):
+        view.customContextMenuRequested.emit(position)
+    if action == 'Monitor Tag':
+        assert w.tag_monitor.get_monitored_tags() == ['Beta']
+        w.tag_monitor._poll()
+        assert w.tag_monitor.model.item(0, 1).text() == '22.000'
+    else:
+        assert w.graph_ui.get_keys() == ['Beta']
+        w.graph_ui._on_timeout()
+        assert w.graph_ui._channels['Beta'][-1] == 22.0
+
+
+def test_search_context_blank_area_does_not_open(search_context_window):
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtWidgets import QMenu
+
+    w = search_context_window
+    with patch.object(QMenu, 'exec') as execute:
+        w.search_results.customContextMenuRequested.emit(QPoint(-1, -1))
+        execute.assert_not_called()
+    assert w.tag_monitor.get_monitored_tags() == []
+    assert w.graph_ui.get_keys() == []
+
+
+@pytest.mark.parametrize('action', ['Monitor Tag', 'Add to Graph'])
+def test_search_context_ignores_disconnect_before_action(search_context_window, action):
+    from PyQt6.QtWidgets import QMenu
+
+    w = search_context_window
+    pos = w.search_results.visualItemRect(w.search_results.item(0)).center()
+
+    def disconnect_then_trigger(menu, _position):
+        w.uaclient.disconnect()
+        next(item for item in menu.actions() if item.text() == action).trigger()
+
+    with patch.object(QMenu, 'exec', new=disconnect_then_trigger):
+        w.search_results.customContextMenuRequested.emit(pos)
+    assert w.tag_monitor.get_monitored_tags() == []
+    assert w.graph_ui.get_keys() == []
+    with patch.object(QMenu, 'exec') as execute:
+        w.search_results.customContextMenuRequested.emit(pos)
+        execute.assert_not_called()
+
+
+def test_search_context_duplicate_and_nonnumeric_graph(search_context_window):
+    from PyQt6.QtWidgets import QMenu
+
+    w = search_context_window
+    view = w.search_results
+    errors = []
+    w.graph_ui.error.disconnect(w.show_error)
+    w.graph_ui.error.connect(errors.append)
+
+    def trigger_twice(menu, _position):
+        for item in menu.actions():
+            item.trigger()
+            item.trigger()
+
+    beta = next(view.item(i) for i in range(view.count()) if view.item(i).text() == 'Beta')
+    with patch.object(QMenu, 'exec', new=trigger_twice):
+        view.customContextMenuRequested.emit(view.visualItemRect(beta).center())
+    assert w.tag_monitor.get_monitored_tags() == ['Beta']
+    assert w.graph_ui.get_keys() == ['Beta']
+
+    w.search_edit.setText('Text')
+    text_item = view.item(0)
+    with patch.object(QMenu, 'exec', new=trigger_twice):
+        view.customContextMenuRequested.emit(view.visualItemRect(text_item).center())
+    assert w.graph_ui.get_keys() == ['Beta']
+    assert errors and 'not numeric' in str(errors[0])
+
+
+@pytest.mark.parametrize('hash_field', [False, True])
+def test_tree_monitor_and_graph_keep_targets(connected_window, hash_field):
+    w = connected_window
+    w.tag_monitor.set_client(w.uaclient)
+    w.graph_ui._timer.stop()
+    w.uaclient._redis.hset('ots-pim:tags', 'Beta', '22')
+    w.uaclient._redis.set('Beta', '999')
+    target = ('ots-pim:tags', 'Beta') if hash_field else None
+    with patch.object(w.tree_ui, 'get_current_hash_field', return_value=target), \
+         patch.object(w.tree_ui, 'get_current_key', return_value='Beta'):
+        w._subscribe_current()
+        w._add_to_graph()
+    assert w.tag_monitor.get_monitored_tags() == ['Beta']
+    assert w.graph_ui.get_keys() == ['Beta']
+    w.graph_ui._on_timeout()
+    assert w.graph_ui._channels['Beta'][-1] == (22.0 if hash_field else 999.0)
+
+
 def test_search_finds_unloaded_tags_and_restores_tree(connected_window, qapp):
     w = connected_window
     w.uaclient._redis.hset('ots-pim:tags', mapping={'Alpha': '1', 'deep.Tag': '2'})
